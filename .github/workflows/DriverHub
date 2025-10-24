@@ -1,0 +1,51 @@
+name: Deploy Frontend to GitHub Pages
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install frontend dependencies
+        working-directory: DriverHub_v2_Full_Demo/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: DriverHub_v2_Full_Demo/frontend
+        run: npm run build
+
+      - name: Prepare publish dir
+        run: |
+          rm -rf gh-pages
+          if [ -d DriverHub_v2_Full_Demo/frontend/dist ]; then
+            cp -r DriverHub_v2_Full_Demo/frontend/dist gh-pages
+          elif [ -d DriverHub_v2_Full_Demo/frontend/build ]; then
+            cp -r DriverHub_v2_Full_Demo/frontend/build gh-pages
+          else
+            echo "No build output found in DriverHub_v2_Full_Demo/frontend (checked dist and build)" >&2
+            ls -la DriverHub_v2_Full_Demo/frontend || true
+            exit 1
+          fi
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          publish_dir: gh-pages
+          publish_branch: gh-pages
+          allow_empty_commit: true
+          github_token: ${{ secrets.COPILOT_DRIVERHUB }}
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
