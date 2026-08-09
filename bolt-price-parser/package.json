@@ -11,7 +11,9 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "login": "node src/login.js",
+    "login:mobile": "node src/loginMobile.js",
     "test:e2e": "node test/e2e.mjs",
+    "test:mobile": "node test/mobile.mjs",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

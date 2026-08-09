@@ -39,6 +39,29 @@ export const config = {
     defaultCountry: process.env.BOLT_DEFAULT_COUNTRY || 'Latvia',
   },
 
+  // Источник цен: 'web' — веб-портал Bolt Business через браузер,
+  // 'mobile' — эмуляция мобильного приложения (вход по телефону + СМС).
+  provider: (process.env.PROVIDER || 'web').toLowerCase(),
+
+  mobile: {
+    // Телефон в международном формате, например +371XXXXXXXX.
+    phone: process.env.BOLT_PHONE || '',
+    baseUrl: process.env.BOLT_MOBILE_BASE_URL || 'https://user.live.boltsvc.net',
+    // Поиск тарифов исторически живёт на отдельном хосте.
+    searchBaseUrl: process.env.BOLT_SEARCH_BASE_URL || 'https://search.bolt.eu',
+    // Готовый токен, если он уже добыт (перехват трафика приложения).
+    accessToken: process.env.BOLT_ACCESS_TOKEN || '',
+    // Файл с токеном и идентификатором «устройства».
+    sessionPath:
+      process.env.MOBILE_SESSION_PATH || path.join(rootDir, '.session', 'mobile.json'),
+    deviceType: process.env.BOLT_DEVICE_TYPE || 'android',
+    appVersion: process.env.BOLT_APP_VERSION || 'CA.218.0',
+    deviceName: process.env.BOLT_DEVICE_NAME || 'Google Pixel 7',
+    deviceOsVersion: process.env.BOLT_DEVICE_OS_VERSION || '13',
+    language: process.env.BOLT_LANGUAGE || 'ru',
+    country: process.env.BOLT_COUNTRY || 'lv',
+  },
+
   browser: {
     // headless для сервера; login.js всегда headed, пока явно не opt-in.
     headless: bool(process.env.HEADLESS, true),

@@ -2,7 +2,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { config, assertCredentials } from './config.js';
-import { getPrices, hasSession } from './boltBusiness.js';
+import * as webProvider from './boltBusiness.js';
+import * as mobileProvider from './mobile/index.js';
+
+const isMobile = config.provider === 'mobile';
+const provider = isMobile ? mobileProvider : webProvider;
+const { getPrices, hasSession } = provider;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '..', 'public');
@@ -80,7 +85,10 @@ export function createApp(overrides = {}) {
       ok: true,
       hasSession: hasSession(),
       city: config.bolt.defaultCity,
-      credentialsConfigured: Boolean(config.bolt.email && config.bolt.password),
+      provider: config.provider,
+      credentialsConfigured: isMobile
+        ? Boolean(config.mobile.phone || config.mobile.accessToken || hasSession())
+        : Boolean(config.bolt.email && config.bolt.password),
       authRequired: Boolean(apiToken),
     });
   });
@@ -109,10 +117,13 @@ export function createApp(overrides = {}) {
     ) {
       return res.status(400).json({ error: 'Укажите pickup и destination.' });
     }
-    try {
-      assertCredentials();
-    } catch (err) {
-      return res.status(500).json({ error: err.message });
+    // Мобильному источнику email/пароль не нужны — там телефон и токен.
+    if (!isMobile) {
+      try {
+        assertCredentials();
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
     }
     if (busy) {
       return res
@@ -165,11 +176,16 @@ if (isMainModule()) {
     } else {
       console.log('[i] API_TOKEN не задан — /api/prices без токена (нормально для localhost).');
     }
-    if (!config.bolt.email || !config.bolt.password) {
+    console.log(
+      `[i] Источник цен: ${isMobile ? 'мобильное приложение (PROVIDER=mobile)' : 'веб-портал Bolt Business (PROVIDER=web)'}`
+    );
+    if (!isMobile && (!config.bolt.email || !config.bolt.password)) {
       console.warn('[!] BOLT_EMAIL / BOLT_PASSWORD не заданы — заполните .env.');
     }
     if (!hasSession()) {
-      console.warn('[!] Сессия не найдена. Выполните один раз: npm run login');
+      console.warn(
+        `[!] Сессия не найдена. Выполните один раз: ${isMobile ? 'npm run login:mobile' : 'npm run login'}`
+      );
     }
   });
 }
