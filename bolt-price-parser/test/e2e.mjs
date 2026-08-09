@@ -241,6 +241,35 @@ async function main() {
     assert.ok(result.tariffs.length >= 3, JSON.stringify(result.tariffs));
   });
 
+  await test('рекламная страница портала: не считается кабинетом, вход доводится до конца', async () => {
+    // Регрессия: публичная страница business.bolt.eu рекламирует «Ride Booker»
+    // и «dashboard», из-за чего текстовые маркеры ложно означали «уже вошли»,
+    // и сохранялась пустая сессия.
+    clearSession();
+    mock.invalidateSessions();
+    mock.setConfig({
+      marketingLanding: true,
+      requireOtp: false,
+      requireConsent: false,
+      priceMode: 'ok',
+      noAutocomplete: false,
+      noAddressInputs: false,
+    });
+    try {
+      const result = await getPrices({
+        pickup: 'Brīvības iela 1',
+        destination: 'Lidosta Rīga',
+      });
+      assert.ok(
+        result.tariffs.length >= 3,
+        `через рекламную страницу должен пройти реальный вход, получили: ${JSON.stringify(result.tariffs)}`
+      );
+      assert.ok(hasSession(), 'сессия должна сохраниться после настоящего входа');
+    } finally {
+      mock.setConfig({ marketingLanding: false });
+    }
+  });
+
   function writeSentinelSession(value) {
     const sentinel = JSON.stringify({
       cookies: [

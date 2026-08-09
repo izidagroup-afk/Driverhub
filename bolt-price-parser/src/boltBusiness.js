@@ -154,10 +154,51 @@ async function otpFieldCount(page) {
   return page.locator(OTP_INPUT).count().catch(() => 0);
 }
 
+/**
+ * Есть ли на странице приглашение войти. Ключевой признак: на публичной
+ * (рекламной) странице портала всегда есть кнопка «Log in»/«Sign up», а внутри
+ * кабинета её нет. Только по тексту вроде «Ride Booker» судить нельзя — он
+ * встречается в рекламе функции на публичной странице.
+ */
+export async function hasLoginAffordance(page) {
+  const fields = await page
+    .locator('input[type="password"]:visible, input[type="email"]:visible')
+    .count()
+    .catch(() => 0);
+  if (fields > 0) return true;
+
+  const cta = page
+    .locator('button:visible, a:visible, [role="button"]:visible')
+    .filter({ hasText: /^\s*(log\s?in|sign\s?in|sign\s?up|get started|войти|регистрац)/i })
+    .first();
+  return (await cta.count().catch(() => 0)) > 0;
+}
+
 async function looksLikeLoggedInShell(page) {
-  // Положительный признак кабинета — не «отсутствие формы логина».
-  const markers = page.getByText(/ride booker|book a ride|new ride|dashboard|заказ/i).first();
-  return (await markers.count().catch(() => 0)) > 0;
+  // Внутри кабинета нет приглашения войти — это надёжнее любого текстового маркера.
+  if (await hasLoginAffordance(page)) return false;
+  if ((await otpFieldCount(page)) > 0) return false;
+  // Экран согласия — тоже ещё не кабинет (у него бывает свой чекбокс).
+  if (await isConsentOrBlockingStep(page)) return false;
+
+  // Плюс любой содержательный признак приложения: выход из аккаунта,
+  // интерфейс заказа или просто поля ввода (на рекламной странице их нет).
+  const count = async (locator) => locator.count().catch(() => 0);
+
+  const logout = page
+    .locator('button:visible, a:visible, [role="button"]:visible, nav:visible')
+    .filter({ hasText: /log\s?out|sign\s?out|my account|выйти|профил/i })
+    .first();
+  if ((await count(logout)) > 0) return true;
+
+  const bookingText = page.getByText(/ride booker|book a ride|new ride|dashboard|заказ/i).first();
+  if ((await count(bookingText)) > 0) return true;
+
+  // Текстовые поля (адреса), но не служебные чекбоксы экрана согласия.
+  const textInputs = page
+    .locator('input[type="text"]:visible, input[type="search"]:visible, input:not([type]):visible')
+    .first();
+  return (await count(textInputs)) > 0;
 }
 
 async function isConsentOrBlockingStep(page) {
@@ -189,17 +230,28 @@ async function isLoginPage(page) {
 
   if ((await otpFieldCount(page)) > 0) return true;
 
-  // Первый шаг логина часто показывает только email (ещё без password) —
-  // иначе мы ошибочно решим, что уже авторизованы.
-  const emailVisible = await page
-    .locator(
-      'input[type="email"]:visible, input[name="email"]:visible, input[name*="email" i]:visible, input[placeholder*="email" i]:visible, input[aria-label*="email" i]:visible'
-    )
+  // Поле email на первом шаге или кнопка «Log in» на публичной странице портала.
+  return hasLoginAffordance(page);
+}
+
+/**
+ * Публичная страница портала: приглашение войти есть, а полей ввода ещё нет.
+ * Тогда нужно сначала нажать «Log in», чтобы добраться до самой формы.
+ */
+async function openLoginFormIfNeeded(page) {
+  const fields = await page
+    .locator('input[type="password"]:visible, input[type="email"]:visible')
     .count()
     .catch(() => 0);
-  if (emailVisible > 0 && !(await looksLikeLoggedInShell(page))) return true;
+  if (fields > 0) return;
 
-  return false;
+  if (await clickByText(page, ['log in', 'sign in', 'войти'])) {
+    await page
+      .locator('input[type="password"]:visible, input[type="email"]:visible')
+      .first()
+      .waitFor({ state: 'visible', timeout: 15000 })
+      .catch(() => {});
+  }
 }
 
 function loginFailureError(kind = 'auth') {
@@ -221,7 +273,9 @@ function loginFailureError(kind = 'auth') {
  * само по себе успехом не считается (OTP/consent/загрузка).
  */
 export async function performLogin(page, { interactive = false } = {}) {
-  await page.goto(config.bolt.baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.goto(config.bolt.portalUrl || config.bolt.baseUrl, {
+    waitUntil: 'domcontentloaded',
+  });
 
   // Ждём либо форму логина, либо признаки уже авторизованного кабинета.
   await Promise.race([
@@ -254,6 +308,9 @@ export async function performLogin(page, { interactive = false } = {}) {
   if (await isConsentOrBlockingStep(page) && !interactive) {
     throw loginFailureError('consent');
   }
+
+  // На публичной странице портала сначала нужно открыть саму форму входа.
+  await openLoginFormIfNeeded(page);
 
   // Иногда сначала показывается поле email, затем — пароль.
   let emailInput = await findInputByHints(page, ['email', 'e-mail', 'почт']);
@@ -425,7 +482,9 @@ async function getPricesInternal({ pickup, destination }) {
     await saveSession(context);
 
     // Переходим к инструменту заказа/оценки.
-    await page.goto(config.bolt.baseUrl, { waitUntil: 'domcontentloaded' });
+    await page.goto(config.bolt.portalUrl || config.bolt.baseUrl, {
+      waitUntil: 'domcontentloaded',
+    });
     await clickByText(page, ['ride booker', 'book a ride', 'new ride', 'order', 'заказ']);
     await page
       .locator(

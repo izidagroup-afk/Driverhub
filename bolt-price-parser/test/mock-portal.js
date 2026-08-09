@@ -29,6 +29,9 @@ export function createMockPortal(initialConfig = {}) {
     autocompleteDelayMs: 250,
     // Режим ответа /api/rideEstimate: ok | error | empty | badSchema
     priceMode: 'ok',
+    // Отдавать на «/» публичную рекламную страницу (как настоящий business.bolt.eu):
+    // рекламирует Ride Booker и имеет кнопку Log in вместо формы.
+    marketingLanding: false,
     // Корректные учётки (сравниваются как есть).
     email: 'test@example.com',
     password: 'test-password',
@@ -77,6 +80,14 @@ export function createMockPortal(initialConfig = {}) {
   });
 
   app.get('/', (req, res) => {
+    if (isAuthed(req)) return res.redirect('/dashboard');
+    if (mockConfig.marketingLanding) {
+      return res.type('html').send(marketingLandingHtml());
+    }
+    res.type('html').send(loginPageHtml(mockConfig.requireOtp));
+  });
+
+  app.get('/login', (req, res) => {
     if (isAuthed(req)) return res.redirect('/dashboard');
     res.type('html').send(loginPageHtml(mockConfig.requireOtp));
   });
@@ -245,6 +256,28 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Публичная страница портала: рекламирует Ride Booker и dashboard (текстовые
+ * маркеры «залогинен» тут ложные), формы входа нет — только кнопка Log in.
+ */
+function marketingLandingHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"/><title>Bolt Business — Company travel</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px}
+  a.cta{display:inline-block;padding:12px 18px;background:#34d186;color:#042;border-radius:8px;text-decoration:none}
+</style></head>
+<body>
+  <nav><a class="cta" href="/login" role="button">Log in</a></nav>
+  <h1>Company travel, simplified</h1>
+  <p>Manage rides for your team from one dashboard.</p>
+  <h2>Ride Booker</h2>
+  <p>Ride Booker allows you to book a ride for employees, clients or guests.</p>
+  <ul><li>Book a ride in seconds</li><li>Full dashboard visibility</li></ul>
+</body></html>`;
+}
+
 function loginPageHtml(requireOtp, error = '') {
   return `<!doctype html>
 <html lang="en">
@@ -344,6 +377,7 @@ function dashboardHtml() {
   /* Фоновый JSON-запрос дашборда — не должен попадать в тарифы */
 </style></head>
 <body>
+  <nav><a href="/logout">Log out</a></nav>
   <h1>Dashboard</h1>
   <p>Welcome to Bolt Business</p>
   <a class="button" href="/ride-booker" role="button">Ride Booker</a>
