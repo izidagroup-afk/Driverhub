@@ -4,11 +4,36 @@ import { config } from './config.js';
 import { launch, saveSession, hasSession, ensureDebugDir } from './browser.js';
 import { extractTariffs } from './priceExtractor.js';
 
-const PICKUP_HINTS = ['pickup', 'pick up', 'pick-up', 'from', 'origin', 'откуда', 'начал'];
-const DEST_HINTS = ['destination', 'drop', 'drop-off', 'dropoff', 'to', 'куда', 'конеч'];
-const LOGIN_HINTS = ['log in', 'login', 'sign in', 'войти', 'e-mail', 'email', 'password'];
+// Более специфичные подсказки первыми. Короткие ('to'/'from') учитываются
+// только как целые слова при скоринге — см. scoreInputAgainstHints.
+const PICKUP_HINTS = ['pickup address', 'pick-up', 'pick up', 'pickup', 'origin', 'откуда', 'начал', 'from'];
+const DEST_HINTS = [
+  'destination address',
+  'drop-off',
+  'dropoff',
+  'destination',
+  'drop off',
+  'куда',
+  'конеч',
+  'to',
+];
+const OTP_INPUT =
+  'input[autocomplete="one-time-code"]:visible, input[name*="otp" i]:visible, input[placeholder*="code" i]:visible, input[aria-label*="code" i]:visible, input[aria-label*="verification" i]:visible';
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function withTimeout(promise, ms, message) {
+  let timer;
+  const guarded = Promise.resolve(promise);
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([
+    guarded.finally(() => clearTimeout(timer)),
+    timeout,
+  ]).finally(() => {
+    // Если сработал таймаут — не оставляем unhandled rejection у исходного промиса.
+    guarded.catch(() => {});
+  });
+}
 
 function isJsonResponse(response) {
   const ct = response.headers()['content-type'] || '';
@@ -28,6 +53,8 @@ function captureResponses(context) {
     try {
       const url = response.url();
       if (!isBoltApi(url) || !isJsonResponse(response)) return;
+      // Оценку поездки/категории интересуют в первую очередь; остальное тоже копим,
+      // но буфер очищается перед вводом адресов (см. getPricesInternal).
       const body = await response.json().catch(() => null);
       if (body && typeof body === 'object') {
         payloads.push({ url, body });
@@ -39,101 +66,262 @@ function captureResponses(context) {
   context.on('response', handler);
   return {
     payloads,
+    clear() {
+      payloads.length = 0;
+    },
     stop: () => context.off('response', handler),
   };
 }
 
-async function findInputByHints(page, hints) {
-  const inputs = page.locator('input:visible');
+function attrsText(parts) {
+  return parts.filter((p) => typeof p === 'string' && p.length > 0).join(' ').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Оценка совпадения поля ввода с подсказками. Короткие токены (< 3) — только как целые слова.
+ */
+function scoreInputAgainstHints(attrs, hints) {
+  if (!attrs) return 0;
+  let score = 0;
+  for (const raw of hints) {
+    const hint = String(raw).toLowerCase().trim();
+    if (!hint) continue;
+    if (attrs === hint) {
+      score += 100;
+      continue;
+    }
+    if (attrs.startsWith(hint + ' ') || attrs.endsWith(' ' + hint) || attrs.includes(' ' + hint + ' ')) {
+      score += 70;
+      continue;
+    }
+    if (hint.length >= 4 && attrs.includes(hint)) {
+      // Длинная подстрока: «pickup» в «pickup address».
+      score += 40 + Math.min(hint.length, 20);
+      continue;
+    }
+    if (hint.length < 4) {
+      // «to» / «from» — только границы слова, иначе «autocomplete»/«information».
+      const re = new RegExp(`(?:^|[^a-z])${hint}(?:[^a-z]|$)`, 'i');
+      if (re.test(attrs)) score += 15;
+    }
+  }
+  return score;
+}
+
+/**
+ * Ищет видимый input по подсказкам placeholder/aria-label/name/id.
+ * Выбирает лучший по score; можно исключить уже выбранный элемент (pickup ≠ destination).
+ */
+async function findInputByHints(page, hints, { exclude = null } = {}) {
+  const inputs = page.locator(
+    'input:visible:not([type="hidden"]):not([type="password"]):not([type="email"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])'
+  );
   const count = await inputs.count();
+  let best = null;
+  let bestScore = 0;
+
   for (let i = 0; i < count; i++) {
     const input = inputs.nth(i);
-    const attrs = (
-      (await input.getAttribute('placeholder')) +
-      ' ' +
-      (await input.getAttribute('aria-label')) +
-      ' ' +
-      (await input.getAttribute('name')) +
-      ' ' +
-      (await input.getAttribute('id'))
-    ).toLowerCase();
-    if (hints.some((h) => attrs.includes(h))) return input;
+    if (exclude) {
+      const handle = await exclude.elementHandle().catch(() => null);
+      if (handle) {
+        const same = await input.evaluate((el, other) => el === other, handle).catch(() => false);
+        await handle.dispose().catch(() => {});
+        if (same) continue;
+      }
+    }
+
+    const parts = await Promise.all([
+      input.getAttribute('placeholder'),
+      input.getAttribute('aria-label'),
+      input.getAttribute('name'),
+      input.getAttribute('id'),
+      input.getAttribute('data-testid'),
+    ]);
+    const attrs = attrsText(parts);
+    const score = scoreInputAgainstHints(attrs, hints);
+    if (score > bestScore) {
+      bestScore = score;
+      best = input;
+    }
   }
-  return null;
+
+  // Минимальный порог: иначе «почти ничего» не считаем находкой.
+  return bestScore >= 15 ? best : null;
+}
+
+async function otpFieldCount(page) {
+  return page.locator(OTP_INPUT).count().catch(() => 0);
+}
+
+async function looksLikeLoggedInShell(page) {
+  // Положительный признак кабинета — не «отсутствие формы логина».
+  const markers = page.getByText(/ride booker|book a ride|new ride|dashboard|заказ/i).first();
+  return (await markers.count().catch(() => 0)) > 0;
+}
+
+async function isConsentOrBlockingStep(page) {
+  const url = page.url();
+  if (/\/consent|\/terms|\/privacy|\/gdpr/i.test(url)) return true;
+
+  // Не путать с обычной кнопкой Continue на логине: нужен явный consent-контекст.
+  const consentRoot = page
+    .locator('body')
+    .filter({ hasText: /terms and privacy|privacy consent|terms of service|соглас.*(условия|политик)|условия использования/i });
+  if ((await consentRoot.count().catch(() => 0)) === 0) return false;
+
+  const accept = page
+    .locator('button:visible, [role="button"]:visible')
+    .filter({ hasText: /^(accept|agree|принять|согласен)\b/i })
+    .first();
+  return (await accept.count().catch(() => 0)) > 0;
 }
 
 async function isLoginPage(page) {
   const url = page.url();
-  if (/login|signin|sign-in|auth/i.test(url)) return true;
+  if (/login|signin|sign-in|auth|otp|verify|2fa/i.test(url)) return true;
+
   const passwordVisible = await page
     .locator('input[type="password"]:visible')
     .count()
     .catch(() => 0);
-  return passwordVisible > 0;
+  if (passwordVisible > 0) return true;
+
+  if ((await otpFieldCount(page)) > 0) return true;
+
+  // Первый шаг логина часто показывает только email (ещё без password) —
+  // иначе мы ошибочно решим, что уже авторизованы.
+  const emailVisible = await page
+    .locator(
+      'input[type="email"]:visible, input[name="email"]:visible, input[name*="email" i]:visible, input[placeholder*="email" i]:visible, input[aria-label*="email" i]:visible'
+    )
+    .count()
+    .catch(() => 0);
+  if (emailVisible > 0 && !(await looksLikeLoggedInShell(page))) return true;
+
+  return false;
+}
+
+function loginFailureError(kind = 'auth') {
+  if (kind === 'consent') {
+    return new Error(
+      'Вход в Bolt Business требует дополнительного согласия/подтверждения на сайте. ' +
+        'Запустите один раз интерактивный вход: `npm run login`, завершите шаги вручную — сессия сохранится.'
+    );
+  }
+  return new Error(
+    'Не удалось автоматически войти в Bolt Business (вероятно, требуется код подтверждения/2FA). ' +
+      'Запустите один раз интерактивный вход: `npm run login`, завершите вход вручную — сессия сохранится.'
+  );
 }
 
 /**
- * Выполняет вход по email/паролю. В интерактивном (headed) режиме ждёт, пока
- * пользователь завершит ввод OTP/2FA вручную.
+ * Выполняет вход по email/паролю. Успех — только при положительном признаке
+ * залогиненного кабинета (Ride Booker / dashboard). Отсутствие формы логина
+ * само по себе успехом не считается (OTP/consent/загрузка).
  */
 export async function performLogin(page, { interactive = false } = {}) {
   await page.goto(config.bolt.baseUrl, { waitUntil: 'domcontentloaded' });
-  await sleep(1500);
 
-  if (!(await isLoginPage(page))) return true; // уже залогинены
+  // Ждём либо форму логина, либо признаки уже авторизованного кабинета.
+  await Promise.race([
+    page.locator('input[type="email"]:visible, input[type="password"]:visible').first().waitFor({
+      state: 'visible',
+      timeout: 10000,
+    }),
+    page
+      .locator('body')
+      .getByText(/ride booker|book a ride|dashboard/i)
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 }),
+  ]).catch(() => {});
+
+  if (await looksLikeLoggedInShell(page)) return true;
+
+  if (!(await isLoginPage(page)) && !(await isConsentOrBlockingStep(page))) {
+    // Неясное состояние (ещё грузится / промежуточный экран) — короткое ожидание.
+    await page
+      .getByText(/ride booker|book a ride|dashboard/i)
+      .first()
+      .waitFor({ state: 'visible', timeout: 5000 })
+      .catch(() => {});
+    if (await looksLikeLoggedInShell(page)) return true;
+    if (!(await isLoginPage(page)) && !(await isConsentOrBlockingStep(page))) {
+      throw loginFailureError('auth');
+    }
+  }
+
+  if (await isConsentOrBlockingStep(page) && !interactive) {
+    throw loginFailureError('consent');
+  }
 
   // Иногда сначала показывается поле email, затем — пароль.
-  const emailInput =
-    (await findInputByHints(page, ['email', 'e-mail', 'почт'])) ||
-    page.locator('input[type="email"]:visible').first();
-  if (await emailInput.count?.().catch(() => 1)) {
-    try {
-      await emailInput.fill(config.bolt.email, { timeout: 8000 });
-    } catch {
-      /* поле могло быть не найдено */
-    }
+  let emailInput = await findInputByHints(page, ['email', 'e-mail', 'почт']);
+  if (!emailInput) {
+    const emailLocator = page.locator('input[type="email"]:visible').first();
+    if ((await emailLocator.count()) > 0) emailInput = emailLocator;
+  }
+  if (emailInput) {
+    await emailInput.fill(config.bolt.email, { timeout: 8000 });
   }
 
   // Нажимаем «продолжить», если пароль ещё не показан.
   let passwordInput = page.locator('input[type="password"]:visible').first();
   if ((await passwordInput.count()) === 0) {
-    await clickByText(page, ['continue', 'next', 'далее', 'продолжить', 'log in', 'войти']);
-    await sleep(1500);
+    await clickByText(page, ['continue', 'next', 'далее', 'продолжить']);
+    await page
+      .locator('input[type="password"]:visible')
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+      .catch(() => {});
     passwordInput = page.locator('input[type="password"]:visible').first();
   }
 
-  if (await passwordInput.count()) {
+  if ((await passwordInput.count()) > 0) {
     await passwordInput.fill(config.bolt.password, { timeout: 8000 });
     await clickByText(page, ['log in', 'sign in', 'войти', 'continue', 'submit']);
   }
 
-  // Ожидание завершения логина (или ручного ввода OTP в интерактиве).
-  const deadline = Date.now() + (interactive ? 5 * 60 * 1000 : 20000);
+  // Ждём кабинет; OTP/consent в headless — сразу понятная ошибка.
+  const deadline = Date.now() + (interactive ? 5 * 60 * 1000 : 12000);
   while (Date.now() < deadline) {
-    await sleep(2000);
-    if (!(await isLoginPage(page))) return true;
-    if (interactive) {
-      // Даём пользователю время ввести код из письма/СМС в открытом браузере.
-      continue;
+    if (await looksLikeLoggedInShell(page)) return true;
+
+    if ((await otpFieldCount(page)) > 0 && !interactive) {
+      throw loginFailureError('auth');
     }
+    if ((await isConsentOrBlockingStep(page)) && !interactive) {
+      throw loginFailureError('consent');
+    }
+
+    await page
+      .getByText(/ride booker|book a ride|dashboard/i)
+      .first()
+      .waitFor({ state: 'visible', timeout: 1500 })
+      .catch(() => {});
   }
 
-  if (await isLoginPage(page)) {
-    throw new Error(
-      'Не удалось автоматически войти в Bolt Business (вероятно, требуется код подтверждения/2FA). ' +
-        'Запустите один раз интерактивный вход: `npm run login`, завершите вход вручную — сессия сохранится.'
-    );
+  if (await looksLikeLoggedInShell(page)) return true;
+  if (await isConsentOrBlockingStep(page)) throw loginFailureError('consent');
+  throw loginFailureError('auth');
+}
+
+function buttonTextPattern(t) {
+  const escaped = String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // \b в JS работает только для ASCII-«слов»; для кириллицы («войти») границы ломаются.
+  if (/^[a-z0-9][a-z0-9\s-]*$/i.test(t)) {
+    return new RegExp(`\\b${escaped}\\b`, 'i');
   }
-  return true;
+  return new RegExp(escaped, 'i');
 }
 
 async function clickByText(page, texts) {
   for (const t of texts) {
     const btn = page
       .locator(`button:visible, [role="button"]:visible, a:visible`)
-      .filter({ hasText: new RegExp(t, 'i') })
+      .filter({ hasText: buttonTextPattern(t) })
       .first();
-    if (await btn.count()) {
+    if ((await btn.count()) > 0) {
       try {
         await btn.click({ timeout: 5000 });
         return true;
@@ -145,25 +333,21 @@ async function clickByText(page, texts) {
   return false;
 }
 
-async function typeAddress(page, input, value) {
-  await input.click();
+async function typeAddress(page, input, value, label) {
+  await input.click({ timeout: 5000 });
   await input.fill('');
-  await input.type(value, { delay: 40 });
-  // Ждём появления списка подсказок и выбираем первую.
-  await sleep(1800);
-  const suggestion = page
-    .locator('[role="option"]:visible, li:visible, [class*="suggestion" i]:visible, [class*="autocomplete" i] *:visible')
-    .first();
-  if (await suggestion.count()) {
-    try {
-      await suggestion.click({ timeout: 5000 });
-      return;
-    } catch {
-      /* fallback ниже */
-    }
+  await input.type(value, { delay: 35 });
+
+  const suggestion = page.locator('[role="option"]:visible').first();
+  try {
+    await suggestion.waitFor({ state: 'visible', timeout: 8000 });
+    await suggestion.click({ timeout: 5000 });
+  } catch {
+    throw new Error(
+      `Не найдены подсказки адреса для «${label}» («${value}»). ` +
+        'Проверьте адрес или изменилась вёрстка автодополнения портала.'
+    );
   }
-  await input.press('ArrowDown');
-  await input.press('Enter');
 }
 
 async function dumpDebug(page, payloads, tag) {
@@ -179,33 +363,54 @@ async function dumpDebug(page, payloads, tag) {
 }
 
 /**
- * DOM-фолбэк: пытается прочитать список тарифов прямо со страницы.
+ * DOM-фолбэк: читает список тарифов со страницы (узкий набор контейнеров).
  */
 async function scrapeDomTariffs(page) {
   return page
     .evaluate(() => {
       const results = [];
-      const priceRe = /(€|EUR|\$|£)\s?\d|\d[\d\s.,]*\s?(€|EUR|\$|£)/i;
-      const nodes = Array.from(document.querySelectorAll('li, [class*="category" i], [class*="option" i], [class*="ride" i]'));
-      for (const node of nodes) {
+      const seen = new Set();
+      const priceRe = /(?:€|EUR|\$|£)\s?\d[\d\s.,]*|\d[\d\s.,]*\s?(?:€|EUR|\$|£)/i;
+      const roots = Array.from(
+        document.querySelectorAll(
+          [
+            '[data-testid*="categor" i]',
+            '[data-testid*="ride" i]',
+            '[class*="ride-option" i]',
+            '[class*="ride_option" i]',
+            '[class*="category" i]',
+            '[class*="tariff" i]',
+            '[class*="vehicle" i]',
+            '.tariff',
+            '#tariffs .tariff',
+          ].join(', ')
+        )
+      );
+
+      for (const node of roots) {
         const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!text || text.length > 80) continue;
+        if (!text || text.length > 100) continue;
         if (!priceRe.test(text)) continue;
-        const priceMatch = text.match(/((€|EUR|\$|£)\s?\d[\d\s.,]*|\d[\d\s.,]*\s?(€|EUR|\$|£))/i);
+        const priceMatch = text.match(
+          /((?:€|EUR|\$|£)\s?\d[\d\s.,]*|\d[\d\s.,]*\s?(?:€|EUR|\$|£))/i
+        );
         const price = priceMatch ? priceMatch[0].trim() : null;
-        const name = price ? text.replace(price, '').trim() : text;
-        if (name) results.push({ name, price, eta: null, surge: null });
+        if (!price) continue;
+        let name = text.replace(price, '').replace(/\s+/g, ' ').trim();
+        name = name.replace(/^[-–—|:·]+|[-–—|:·]+$/g, '').trim();
+        if (!name || name.length < 2 || name.length > 40) continue;
+        if (/help|copyright|promo|offer|news|cookie/i.test(name)) continue;
+        const key = `${name}|${price}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        results.push({ name, price, eta: null, surge: null });
       }
       return results;
     })
     .catch(() => []);
 }
 
-/**
- * Основной метод: возвращает актуальные тарифы Bolt для маршрута.
- * @param {{pickup:string, destination:string}} params
- */
-export async function getPrices({ pickup, destination }) {
+async function getPricesInternal({ pickup, destination }) {
   if (!pickup || !destination) {
     throw new Error('Нужно указать адреса начала (pickup) и конца (destination).');
   }
@@ -215,17 +420,23 @@ export async function getPrices({ pickup, destination }) {
   const page = await context.newPage();
 
   try {
+    // Успех performLogin = положительный признак кабинета; только тогда пишем сессию.
     await performLogin(page, { interactive: false });
-    await saveSession(context); // обновляем сессию
+    await saveSession(context);
 
     // Переходим к инструменту заказа/оценки.
     await page.goto(config.bolt.baseUrl, { waitUntil: 'domcontentloaded' });
-    await sleep(2000);
     await clickByText(page, ['ride booker', 'book a ride', 'new ride', 'order', 'заказ']);
-    await sleep(1500);
+    await page
+      .locator(
+        'input:visible:not([type="hidden"]):not([type="password"]):not([type="email"])'
+      )
+      .first()
+      .waitFor({ state: 'visible', timeout: 12000 })
+      .catch(() => {});
 
     const pickupInput = await findInputByHints(page, PICKUP_HINTS);
-    const destInput = await findInputByHints(page, DEST_HINTS);
+    const destInput = await findInputByHints(page, DEST_HINTS, { exclude: pickupInput });
     if (!pickupInput || !destInput) {
       const shot = config.debug ? await dumpDebug(page, capture.payloads, 'no-inputs') : null;
       throw new Error(
@@ -234,11 +445,34 @@ export async function getPrices({ pickup, destination }) {
       );
     }
 
-    await typeAddress(page, pickupInput, pickup);
-    await typeAddress(page, destInput, destination);
+    // Сбрасываем всё, что успели поймать на логине/дашборде — иначе extractTariffs
+    // подхватит виджеты с name/price и выдаст фейковые тарифы.
+    capture.clear();
 
-    // Ждём подгрузки цен (сеть + рендер).
-    await sleep(4000);
+    const priceResponseWait = page
+      .waitForResponse(
+        (r) => {
+          try {
+            const url = r.url();
+            return (
+              isBoltApi(url) &&
+              /ride|estimate|price|fare|categor|quote|search/i.test(url) &&
+              isJsonResponse(r)
+            );
+          } catch {
+            return false;
+          }
+        },
+        { timeout: Math.min(config.browser.timeoutMs, 20000) }
+      )
+      .catch(() => null);
+
+    await typeAddress(page, pickupInput, pickup, 'pickup');
+    await typeAddress(page, destInput, destination, 'destination');
+
+    await priceResponseWait;
+    // Даем догрузить возможные дополнительные JSON-ответы с категориями.
+    await new Promise((r) => setTimeout(r, 600));
 
     let tariffs = extractTariffs(capture.payloads.map((p) => p.body));
     if (tariffs.length === 0) {
@@ -264,6 +498,19 @@ export async function getPrices({ pickup, destination }) {
   }
 }
 
+/**
+ * Основной метод: возвращает актуальные тарифы Bolt для маршрута.
+ * @param {{pickup:string, destination:string}} params
+ */
+export async function getPrices(params) {
+  const ms = config.browser.requestTimeoutMs;
+  return withTimeout(
+    getPricesInternal(params),
+    ms,
+    `Превышен общий таймаут запроса цен (${ms} мс). Повторите позже или увеличьте REQUEST_TIMEOUT_MS.`
+  );
+}
+
 function guessCurrency(tariffs) {
   for (const t of tariffs) {
     if (!t.price) continue;
@@ -273,4 +520,4 @@ function guessCurrency(tariffs) {
   return null;
 }
 
-export { hasSession };
+export { hasSession, findInputByHints, scoreInputAgainstHints };

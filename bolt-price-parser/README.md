@@ -39,7 +39,7 @@
 
 ## Установка
 
-Требуется Node.js 18+.
+Требуется **Node.js 20+** (Playwright ≥1.62 объявляет `engines.node: ">=20"`).
 
 ```bash
 cd bolt-price-parser
@@ -60,11 +60,22 @@ npx playwright install-deps chromium
 Выполняется один раз (и повторно, когда сессия протухнет):
 
 ```bash
-HEADLESS=false npm run login
+npm run login
 ```
 
-Откроется окно браузера — войдите в аккаунт и, если попросят, введите код подтверждения.
-После успешного входа сессия сохранится автоматически.
+Команда **всегда** открывает видимое окно браузера (headed), даже если в `.env`
+стоит `HEADLESS=true` — иначе нельзя ввести OTP/2FA. Значение `HEADLESS` влияет
+только на сервер (`npm start`). Headless-login только при явном opt-in:
+
+```bash
+npm run login -- --headless
+# или
+LOGIN_HEADLESS=1 npm run login
+```
+
+Войдите в аккаунт и, если попросят, введите код подтверждения.
+После успешного входа сессия сохранится автоматически (только если реально
+открылся кабинет — промежуточный OTP/consent сессию не перезапишет).
 
 > На сервере без графики (headless‑окружение) вход в headed‑режиме невозможен. В этом случае
 > выполните `npm run login` на своём компьютере и скопируйте файл
@@ -76,12 +87,18 @@ HEADLESS=false npm run login
 npm start
 ```
 
-Откройте <http://localhost:4000>, введите адреса и нажмите «Узнать цены».
+По умолчанию сервер слушает только `127.0.0.1` (см. `HOST`). Откройте
+<http://localhost:4000>, введите адреса и нажмите «Узнать цены».
+
+Опционально задайте `API_TOKEN` в `.env` — тогда `POST /api/prices` потребует
+`Authorization: Bearer …`. Веб-UI подставляет токен сам. Также действует простой
+per-IP rate limit (`RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS`).
 
 ## API
 
-- `GET /api/health` — статус (заданы ли доступы, есть ли сессия).
+- `GET /api/health` — статус (заданы ли доступы, есть ли сессия, нужен ли токен).
 - `POST /api/prices` — тело `{ "pickup": "...", "destination": "..." }`.
+  Если задан `API_TOKEN` — заголовок `Authorization: Bearer <токен>` (или `X-API-Token`).
   Ответ:
 
 ```json
@@ -106,9 +123,13 @@ npm start
 | `BOLT_EMAIL`, `BOLT_PASSWORD` | доступы Bolt Business | — |
 | `BOLT_BASE_URL` | адрес портала | `https://business.bolt.eu` |
 | `BOLT_DEFAULT_CITY` / `BOLT_DEFAULT_COUNTRY` | город/страна | `Rīga` / `Latvia` |
-| `HEADLESS` | фоновый браузер | `true` |
+| `HEADLESS` | фоновый браузер **для сервера** (`npm start`); на `npm run login` не влияет | `true` |
+| `LOGIN_HEADLESS` | явный headless для `npm run login` (альтернатива флагу `--headless`) | выкл. |
 | `GEO_LAT`, `GEO_LNG` | координаты по умолчанию | центр Риги |
+| `HOST` | интерфейс прослушивания | `127.0.0.1` |
 | `PORT` | порт сервера | `4000` |
+| `API_TOKEN` | опциональный токен для `POST /api/prices` | пусто |
+| `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` | per-IP лимит на `/api/prices` | `20` / `60000` |
 | `DEBUG_CAPTURE` | сохранять скриншот+JSON при запросе | `0` |
 
 ## Отладка

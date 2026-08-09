@@ -1,24 +1,45 @@
 /**
  * Интерактивный вход в Bolt Business для сохранения сессии.
  *
- * Запуск: `HEADLESS=false npm run login`
- * Откроется браузер. Войдите (email/пароль + код из письма/СМС, если попросит).
- * После успешного входа сессия сохранится в .session/storageState.json,
- * и сервер будет переиспользовать её без повторного логина.
+ * Запуск: `npm run login`
+ * По умолчанию всегда открывается видимое окно браузера (headed), даже если в
+ * `.env` стоит HEADLESS=true — иначе нельзя ввести OTP/2FA.
+ *
+ * Headless только при явном opt-in:
+ *   npm run login -- --headless
+ *   LOGIN_HEADLESS=1 npm run login
  */
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config, assertCredentials } from './config.js';
 import { launch, saveSession } from './browser.js';
 import { performLogin } from './boltBusiness.js';
 
+/**
+ * Решает, запускать ли login headless.
+ * Игнорирует HEADLESS из .env — только явный CLI-флаг или LOGIN_HEADLESS.
+ */
+export function resolveLoginHeadless({
+  argv = process.argv.slice(2),
+  env = process.env,
+} = {}) {
+  if (argv.includes('--headless')) return true;
+  const flag = String(env.LOGIN_HEADLESS || '').toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(flag);
+}
+
 async function main() {
   assertCredentials();
 
-  const headless = process.env.HEADLESS ? config.browser.headless : false;
+  const headless = resolveLoginHeadless();
   if (headless) {
     console.warn(
-      '\n[!] Похоже, HEADLESS=true. Для ручного входа лучше запустить с HEADLESS=false, ' +
-        'чтобы видеть окно браузера и ввести код подтверждения.\n'
+      '\n[!] Login запущен в headless (`--headless` или LOGIN_HEADLESS=1). ' +
+        'Код подтверждения ввести будет нельзя. Для обычного входа: `npm run login`.\n'
     );
+  } else {
+    console.log('\nОткрываю браузер для интерактивного входа (headed).');
+    console.log('HEADLESS из .env на эту команду не влияет.\n');
   }
 
   const { browser, context } = await launch({ headless, useSession: true });
@@ -26,7 +47,9 @@ async function main() {
 
   console.log(`Открываю ${config.bolt.baseUrl} … Войдите в аккаунт в открывшемся окне.`);
   try {
-    await performLogin(page, { interactive: true });
+    // interactive=true только в headed: там пользователь может ввести OTP вручную.
+    await performLogin(page, { interactive: !headless });
+    // performLogin возвращает успех только при положительном признаке кабинета.
     await saveSession(context);
     console.log(`\n[✓] Сессия сохранена: ${config.browser.storageStatePath}`);
     console.log('Теперь можно запускать сервер: npm start');
@@ -39,4 +62,10 @@ async function main() {
   }
 }
 
-main();
+const isMain =
+  Boolean(process.argv[1]) &&
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isMain) {
+  main();
+}

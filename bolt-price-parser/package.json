@@ -4,10 +4,14 @@
   "private": true,
   "type": "module",
   "description": "Парсер актуальной стоимости поездки Bolt по всем тарифам (через веб-портал Bolt Business / Ride Booker).",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "login": "node src/login.js",
+    "test:e2e": "node test/e2e.mjs",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

@@ -7,6 +7,15 @@ const routeEl = document.getElementById('route');
 const fetchedAtEl = document.getElementById('fetchedAt');
 const statusEl = document.getElementById('status');
 
+function apiHeaders(extra = {}) {
+  const headers = { ...extra };
+  const token = window.__BPP_CONFIG__ && window.__BPP_CONFIG__.apiToken;
+  if (token) {
+    headers.Authorization = 'Bearer ' + token;
+  }
+  return headers;
+}
+
 function showMessage(text, kind = 'error') {
   messageEl.hidden = false;
   messageEl.textContent = text;
@@ -28,7 +37,8 @@ async function refreshStatus() {
       statusEl.textContent = 'нет сессии — нужен вход';
       statusEl.className = 'status status--warn';
     } else {
-      statusEl.textContent = `готово · ${data.city || ''}`.trim();
+      const auth = data.authRequired ? ' · token' : '';
+      statusEl.textContent = `готово · ${data.city || ''}${auth}`.trim();
       statusEl.className = 'status status--ok';
     }
   } catch {
@@ -93,7 +103,7 @@ form.addEventListener('submit', async (e) => {
   try {
     const res = await fetch('/api/prices', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: apiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ pickup, destination }),
     });
     const data = await res.json();
