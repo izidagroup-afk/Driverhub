@@ -40,8 +40,9 @@ export const config = {
   },
 
   // Источник цен: 'web' — веб-портал Bolt Business через браузер,
-  // 'mobile' — эмуляция мобильного приложения (вход по телефону + СМС).
-  provider: (process.env.PROVIDER || 'web').toLowerCase(),
+  // 'mobile' — эмуляция мобильного приложения (вход по телефону + СМС),
+  // 'auto' — mobile, если есть сессия приложения, иначе web.
+  provider: (process.env.PROVIDER || 'auto').toLowerCase(),
 
   mobile: {
     // Телефон в международном формате, например +371XXXXXXXX.

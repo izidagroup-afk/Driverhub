@@ -25,12 +25,16 @@ async function main() {
         '    на телефоне может разлогиниться.\n'
     );
 
+    // Номер можно передать аргументом: npm run login:mobile -- +37120000000
+    const argPhone = process.argv.slice(2).find((a) => a.startsWith('+'));
     const saved = loadMobileSession();
-    const defaultPhone = config.mobile.phone || saved?.phone || '';
-    const phone =
-      (await rl.question(
-        `Номер телефона в международном формате${defaultPhone ? ` [${defaultPhone}]` : ' (например +37120000000)'}: `
-      )) || defaultPhone;
+    const defaultPhone = argPhone || config.mobile.phone || saved?.phone || '';
+
+    const phone = argPhone
+      ? argPhone
+      : (await rl.question(
+          `Номер телефона в международном формате${defaultPhone ? ` [${defaultPhone}]` : ' (например +37120000000)'}: `
+        )) || defaultPhone;
 
     console.log('\nЗапрашиваю код…');
     await startVerification(phone);
@@ -41,9 +45,8 @@ async function main() {
 
     console.log(`\n[✓] Вход выполнен${tokens.firstName ? `, ${tokens.firstName}` : ''}.`);
     console.log(`[✓] Сессия сохранена: ${config.mobile.sessionPath}`);
-    console.log('\nВключите мобильный источник в .env:');
-    console.log('    PROVIDER=mobile');
-    console.log('\nЗатем запускайте сервер: npm start');
+    console.log('\nНичего настраивать не нужно — сервер сам увидит эту сессию.');
+    console.log('Запускайте: npm start');
   } catch (err) {
     console.error('\n[x] Не удалось войти:', err.message);
     console.error(

@@ -70,6 +70,8 @@ async function main() {
   });
 
   // Env ДО динамического импорта config/boltBusiness (dotenv не перезапишет уже заданные).
+  // Явный web: иначе автовыбор источника мог бы уйти в mobile при наличии его сессии.
+  process.env.PROVIDER = 'web';
   process.env.BOLT_EMAIL = MOCK_EMAIL;
   process.env.BOLT_PASSWORD = MOCK_PASSWORD;
   process.env.BOLT_BASE_URL = mock.baseUrl;

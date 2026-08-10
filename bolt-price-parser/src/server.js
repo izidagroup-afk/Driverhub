@@ -5,7 +5,13 @@ import { config, assertCredentials } from './config.js';
 import * as webProvider from './boltBusiness.js';
 import * as mobileProvider from './mobile/index.js';
 
-const isMobile = config.provider === 'mobile';
+// 'auto' — выбираем мобильный источник, если вход через приложение уже сделан.
+// Так после `npm run login:mobile` ничего дополнительно настраивать не нужно.
+const isMobile =
+  config.provider === 'mobile' ||
+  (config.provider === 'auto' &&
+    (mobileProvider.hasSession() || Boolean(config.mobile.accessToken)));
+
 const provider = isMobile ? mobileProvider : webProvider;
 const { getPrices, hasSession } = provider;
 
@@ -85,7 +91,7 @@ export function createApp(overrides = {}) {
       ok: true,
       hasSession: hasSession(),
       city: config.bolt.defaultCity,
-      provider: config.provider,
+      provider: isMobile ? 'mobile' : 'web',
       credentialsConfigured: isMobile
         ? Boolean(config.mobile.phone || config.mobile.accessToken || hasSession())
         : Boolean(config.bolt.email && config.bolt.password),
