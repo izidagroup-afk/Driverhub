@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bolt — стоимость поездки по тарифам</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app__header">
+        <div class="logo">⚡ Bolt Price Parser</div>
+        <div id="status" class="status status--muted">проверка статуса…</div>
+      </header>
+
+      <section class="card">
+        <h1>Актуальная стоимость поездки по всем тарифам</h1>
+        <p class="hint">
+          Введите адреса начала и конца поездки. Цены берутся из веб-портала Bolt Business
+          в реальном времени при каждом запросе.
+        </p>
+
+        <form id="form" class="form">
+          <label class="field">
+            <span>Откуда</span>
+            <input id="pickup" name="pickup" type="text" placeholder="напр. Rīga, Brīvības iela 1" required />
+          </label>
+          <label class="field">
+            <span>Куда</span>
+            <input id="destination" name="destination" type="text" placeholder="напр. Rīga, Lidosta «Rīga»" required />
+          </label>
+          <button id="submit" type="submit" class="btn">Узнать цены</button>
+        </form>
+
+        <div id="message" class="message" hidden></div>
+
+        <div id="results" class="results" hidden>
+          <div class="results__meta">
+            <span id="route"></span>
+            <span id="fetchedAt" class="status--muted"></span>
+          </div>
+          <table class="tariffs">
+            <thead>
+              <tr>
+                <th>Тариф</th>
+                <th>Цена</th>
+                <th>Подача</th>
+                <th>Спрос ×</th>
+              </tr>
+            </thead>
+            <tbody id="tariffs-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="app__footer">
+        Данные из веб-портала Bolt Business. Инструмент для личного использования;
+        соблюдайте условия сервиса Bolt.
+      </footer>
+    </main>
+    <script src="/app-config.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "bolt-price-parser",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Парсер актуальной стоимости поездки Bolt по всем тарифам (через веб-портал Bolt Business / Ride Booker).",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "login": "node src/login.js",
+    "login:mobile": "node src/loginMobile.js",
+    "test:e2e": "node test/e2e.mjs",
+    "test:mobile": "node test/mobile.mjs",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "playwright": "^1.47.0"
+  }
+}
