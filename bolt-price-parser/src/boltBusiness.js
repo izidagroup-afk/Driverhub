@@ -235,6 +235,32 @@ async function isLoginPage(page) {
 }
 
 /**
+ * Закрывает баннер согласия на cookie — иначе он перекрывает форму входа.
+ */
+async function dismissCookieBanner(page) {
+  const labels = [
+    'allow all',
+    'accept all',
+    'accept cookies',
+    'only necessary',
+    'necessary only',
+    'принять все',
+    'разрешить все',
+  ];
+  for (const label of labels) {
+    const btn = page
+      .locator('button:visible, [role="button"]:visible')
+      .filter({ hasText: new RegExp(label, 'i') })
+      .first();
+    if (await btn.count().catch(() => 0)) {
+      await btn.click({ timeout: 4000 }).catch(() => {});
+      await page.waitForTimeout(500);
+      return;
+    }
+  }
+}
+
+/**
  * Публичная страница портала: приглашение войти есть, а полей ввода ещё нет.
  * Тогда нужно сначала нажать «Log in», чтобы добраться до самой формы.
  */
@@ -276,6 +302,8 @@ export async function performLogin(page, { interactive = false } = {}) {
   await page.goto(config.bolt.portalUrl || config.bolt.baseUrl, {
     waitUntil: 'domcontentloaded',
   });
+
+  await dismissCookieBanner(page);
 
   // Ждём либо форму логина, либо признаки уже авторизованного кабинета.
   await Promise.race([

@@ -29,7 +29,9 @@ export const config = {
   bolt: {
     email: process.env.BOLT_EMAIL || '',
     password: process.env.BOLT_PASSWORD || '',
-    baseUrl: process.env.BOLT_BASE_URL || 'https://business.bolt.eu',
+    // Корень business.bolt.eu редиректит на рекламную страницу — форма входа
+    // живёт на /login. По умолчанию открываем сразу её.
+    baseUrl: process.env.BOLT_BASE_URL || 'https://business.bolt.eu/login',
     // Адрес самого кабинета (после входа). На business.bolt.eu корень — рекламная
     // страница, поэтому цены запрашиваются по этому URL. Заполняется из адресной
     // строки браузера после первого входа (`npm run login` подскажет значение).
